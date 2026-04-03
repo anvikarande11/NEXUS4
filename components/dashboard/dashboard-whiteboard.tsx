@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Pen, Highlighter, Eraser, Trash2, RotateCcw, RotateCw, Hand, Grid3x3, Palette, Camera, CameraOff, AlertCircle } from 'lucide-react'
+import { Pen, Highlighter, Eraser, Trash2, RotateCcw, RotateCw, Hand, Grid3x3, Palette, Camera, CameraOff, AlertCircle, Video } from 'lucide-react'
 import { useDashboardStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 
@@ -26,6 +26,10 @@ const NEON_COLORS = [
   '#06b6d4', // cyan
 ]
 
+// Singleton for MediaPipe to prevent multiple instances
+let handsInstance: any = null
+let isMediaPipeInitializing = false
+
 export function DashboardWhiteboard() {
   const { isCVModeActive, setCVModeActive } = useDashboardStore()
 
@@ -33,9 +37,9 @@ export function DashboardWhiteboard() {
   const containerRef = useRef<HTMLDivElement>(null)
   const contextRef = useRef<CanvasRenderingContext2D | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const handsRef = useRef<any>(null)
-  const cameraRef = useRef<any>(null)
+  const streamRef = useRef<MediaStream | null>(null)
   const animationFrameRef = useRef<number | null>(null)
+  const isActiveRef = useRef(false)
   
   const [drawState, setDrawState] = useState<CanvasDrawState>({
     isDrawing: false,
@@ -55,6 +59,12 @@ export function DashboardWhiteboard() {
   const [fingerPosition, setFingerPosition] = useState<{ x: number; y: number } | null>(null)
   const [isFingerDown, setIsFingerDown] = useState(false)
   const lastFingerPos = useRef<{ x: number; y: number } | null>(null)
+  const drawStateRef = useRef(drawState)
+
+  // Keep drawState ref in sync
+  useEffect(() => {
+    drawStateRef.current = drawState
+  }, [drawState])
 
   // Initialize canvas
   useEffect(() => {
@@ -157,23 +167,24 @@ export function DashboardWhiteboard() {
   const drawLine = useCallback((fromX: number, fromY: number, toX: number, toY: number) => {
     if (!contextRef.current) return
     const ctx = contextRef.current
+    const currentDrawState = drawStateRef.current
 
-    if (drawState.tool === 'pen') {
-      ctx.strokeStyle = drawState.color
-      ctx.lineWidth = drawState.lineWidth
+    if (currentDrawState.tool === 'pen') {
+      ctx.strokeStyle = currentDrawState.color
+      ctx.lineWidth = currentDrawState.lineWidth
       ctx.globalAlpha = 1
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
       ctx.shadowBlur = 8
-      ctx.shadowColor = drawState.color
-    } else if (drawState.tool === 'highlighter') {
-      ctx.strokeStyle = drawState.color
-      ctx.lineWidth = drawState.lineWidth * 4
+      ctx.shadowColor = currentDrawState.color
+    } else if (currentDrawState.tool === 'highlighter') {
+      ctx.strokeStyle = currentDrawState.color
+      ctx.lineWidth = currentDrawState.lineWidth * 4
       ctx.globalAlpha = 0.3
       ctx.lineCap = 'square'
       ctx.shadowBlur = 0
-    } else if (drawState.tool === 'eraser') {
-      ctx.clearRect(toX - drawState.lineWidth * 2, toY - drawState.lineWidth * 2, drawState.lineWidth * 4, drawState.lineWidth * 4)
+    } else if (currentDrawState.tool === 'eraser') {
+      ctx.clearRect(toX - currentDrawState.lineWidth * 2, toY - currentDrawState.lineWidth * 2, currentDrawState.lineWidth * 4, currentDrawState.lineWidth * 4)
       ctx.globalAlpha = 1
       return
     }
@@ -184,51 +195,96 @@ export function DashboardWhiteboard() {
     ctx.stroke()
     ctx.globalAlpha = 1
     ctx.shadowBlur = 0
-  }, [drawState.tool, drawState.color, drawState.lineWidth])
+  }, [])
 
-  // Initialize MediaPipe Hands for CV Mode
+  // Cleanup function
+  const cleanupCV = useCallback(() => {
+    isActiveRef.current = false
+    
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current)
+      animationFrameRef.current = null
+    }
+    
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop())
+      streamRef.current = null
+    }
+    
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
+    
+    setFingerPosition(null)
+    setIsFingerDown(false)
+    lastFingerPos.current = null
+  }, [])
+
+  // Initialize CV Mode with proper hand tracking
   useEffect(() => {
     if (!isCVModeActive) {
-      // Cleanup when CV mode is turned off
-      if (cameraRef.current) {
-        cameraRef.current.stop()
-        cameraRef.current = null
-      }
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
+      cleanupCV()
       setCVStatus('idle')
-      setFingerPosition(null)
+      return
+    }
+
+    // Prevent multiple initialization
+    if (isMediaPipeInitializing) {
       return
     }
 
     const initCV = async () => {
+      isMediaPipeInitializing = true
+      isActiveRef.current = true
       setCVStatus('loading')
       setCVError('')
 
       try {
-        // Load MediaPipe Hands from CDN
-        const { Hands } = await import('@mediapipe/hands')
-        const { Camera } = await import('@mediapipe/camera_utils')
+        // Request camera access
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode: 'user'
+          }
+        })
+        
+        if (!isActiveRef.current) {
+          stream.getTracks().forEach(track => track.stop())
+          isMediaPipeInitializing = false
+          return
+        }
 
+        streamRef.current = stream
+        
         const video = videoRef.current
         if (!video) {
           throw new Error('Video element not found')
         }
 
-        // Initialize hands
-        const hands = new Hands({
-          locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-        })
+        video.srcObject = stream
+        await video.play()
 
-        hands.setOptions({
-          maxNumHands: 1,
-          modelComplexity: 1,
-          minDetectionConfidence: 0.7,
-          minTrackingConfidence: 0.5
-        })
+        // Initialize MediaPipe Hands only once (singleton)
+        if (!handsInstance) {
+          const { Hands } = await import('@mediapipe/hands')
+          
+          handsInstance = new Hands({
+            locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+          })
 
-        hands.onResults((results: any) => {
+          handsInstance.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 0, // Use lighter model for better performance
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.5
+          })
+        }
+
+        // Set up results handler
+        handsInstance.onResults((results: any) => {
+          if (!isActiveRef.current) return
+          
           if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             const landmarks = results.multiHandLandmarks[0]
             
@@ -253,7 +309,7 @@ export function DashboardWhiteboard() {
             )
             
             // Pinch threshold - when fingers are close, we're "drawing"
-            const isPinching = distance < 0.05
+            const isPinching = distance < 0.06
             
             if (isPinching && lastFingerPos.current) {
               drawLine(lastFingerPos.current.x, lastFingerPos.current.y, x, y)
@@ -263,47 +319,51 @@ export function DashboardWhiteboard() {
             lastFingerPos.current = { x, y }
           } else {
             setFingerPosition(null)
-            if (isFingerDown) {
-              saveToHistory()
-            }
             setIsFingerDown(false)
             lastFingerPos.current = null
           }
         })
 
-        handsRef.current = hands
-
-        // Initialize camera
-        const camera = new Camera(video, {
-          onFrame: async () => {
-            if (handsRef.current) {
-              await handsRef.current.send({ image: video })
+        // Start processing frames
+        const processFrame = async () => {
+          if (!isActiveRef.current || !video || video.readyState !== 4) {
+            if (isActiveRef.current) {
+              animationFrameRef.current = requestAnimationFrame(processFrame)
             }
-          },
-          width: 640,
-          height: 480
-        })
+            return
+          }
 
-        await camera.start()
-        cameraRef.current = camera
+          try {
+            await handsInstance.send({ image: video })
+          } catch (e) {
+            // Ignore send errors during cleanup
+          }
+
+          if (isActiveRef.current) {
+            animationFrameRef.current = requestAnimationFrame(processFrame)
+          }
+        }
+
+        animationFrameRef.current = requestAnimationFrame(processFrame)
         setCVStatus('active')
+        isMediaPipeInitializing = false
 
       } catch (err: any) {
-        console.error('[v0] CV Mode error:', err)
+        console.error('CV Mode error:', err)
         setCVError(err.message || 'Failed to initialize hand tracking')
         setCVStatus('error')
-        setCVModeActive(false)
+        cleanupCV()
+        isMediaPipeInitializing = false
       }
     }
 
     initCV()
 
     return () => {
-      if (cameraRef.current) {
-        cameraRef.current.stop()
-      }
+      cleanupCV()
+      isMediaPipeInitializing = false
     }
-  }, [isCVModeActive, drawLine, isFingerDown, saveToHistory, setCVModeActive])
+  }, [isCVModeActive, cleanupCV, drawLine])
 
   // Mouse drawing handlers
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -407,12 +467,18 @@ export function DashboardWhiteboard() {
 
       {/* Canvas */}
       <div ref={containerRef} className="flex-1 relative overflow-hidden">
-        {/* Hidden video element for CV */}
+        {/* Video element for CV - show small preview when active */}
         <video
           ref={videoRef}
-          className="hidden"
           playsInline
           muted
+          className={cn(
+            "absolute z-20 rounded-lg border-2 border-accent/50 shadow-lg transition-all",
+            isCVModeActive && cvStatus === 'active'
+              ? "bottom-4 right-4 w-32 h-24 opacity-80"
+              : "hidden"
+          )}
+          style={{ transform: 'scaleX(-1)' }}
         />
 
         <canvas
@@ -469,7 +535,7 @@ export function DashboardWhiteboard() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
-              className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full bg-card/90 border border-border/50 backdrop-blur shadow-lg"
+              className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full bg-card/90 border border-border/50 backdrop-blur shadow-lg z-10"
             >
               <Hand className="w-4 h-4 text-accent" />
               <span className="text-xs text-muted-foreground">
@@ -486,7 +552,7 @@ export function DashboardWhiteboard() {
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.9 }}
-              className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur"
+              className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur z-30"
             >
               <div className="text-center p-6 bg-card rounded-xl border border-destructive/30 max-w-sm">
                 <AlertCircle className="w-10 h-10 text-destructive mx-auto mb-3" />
@@ -495,6 +561,15 @@ export function DashboardWhiteboard() {
                 <p className="text-xs text-muted-foreground">
                   Make sure your camera is connected and you have granted permission.
                 </p>
+                <button
+                  onClick={() => {
+                    setCVStatus('idle')
+                    setCVModeActive(false)
+                  }}
+                  className="mt-4 px-4 py-2 text-xs bg-primary text-primary-foreground rounded-lg hover:bg-primary/90"
+                >
+                  Dismiss
+                </button>
               </div>
             </motion.div>
           )}
@@ -507,7 +582,7 @@ export function DashboardWhiteboard() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur"
+              className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur z-30"
             >
               <div className="text-center">
                 <div className="w-12 h-12 border-3 border-accent border-t-transparent rounded-full animate-spin mx-auto mb-4" />
@@ -582,9 +657,11 @@ export function DashboardWhiteboard() {
                       }}
                       className={cn(
                         "w-6 h-6 rounded-full border-2 transition-all",
-                        drawState.color === color ? "border-white" : "border-transparent"
+                        drawState.color === color
+                          ? "border-white scale-110"
+                          : "border-transparent hover:border-white/50"
                       )}
-                      style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}40` }}
+                      style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}50` }}
                     />
                   ))}
                 </div>
@@ -594,26 +671,37 @@ export function DashboardWhiteboard() {
         </div>
 
         {/* Line Width */}
-        <div className="flex items-center gap-2 border-r border-border/50 pr-2">
-          <input
-            type="range"
-            min="1"
-            max="12"
-            value={drawState.lineWidth}
-            onChange={(e) => setDrawState(prev => ({ ...prev, lineWidth: parseInt(e.target.value) }))}
-            className="w-16 h-1 rounded-lg bg-muted cursor-pointer accent-primary"
-          />
-          <span className="text-xs text-muted-foreground w-6">{drawState.lineWidth}px</span>
+        <div className="flex items-center gap-1 border-r border-border/50 pr-2">
+          {[2, 4, 8].map((width) => (
+            <motion.button
+              key={width}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setDrawState(prev => ({ ...prev, lineWidth: width }))}
+              className={cn(
+                "w-8 h-8 rounded-lg flex items-center justify-center transition-all",
+                drawState.lineWidth === width
+                  ? "bg-primary/20 text-primary"
+                  : "bg-muted/50 text-muted-foreground hover:bg-muted"
+              )}
+              title={`Line width ${width}`}
+            >
+              <div 
+                className="rounded-full bg-current"
+                style={{ width: width + 2, height: width + 2 }}
+              />
+            </motion.button>
+          ))}
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-1 ml-auto">
+        <div className="flex items-center gap-1 border-r border-border/50 pr-2">
           <motion.button
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={undo}
             disabled={historyIndex <= 0}
-            className="p-2 rounded-lg bg-muted/50 text-muted-foreground hover:bg-muted disabled:opacity-30 transition-all"
+            className="p-2 rounded-lg bg-muted/50 text-muted-foreground hover:bg-muted transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             title="Undo"
           >
             <RotateCcw className="w-4 h-4" />
@@ -623,21 +711,34 @@ export function DashboardWhiteboard() {
             whileTap={{ scale: 0.95 }}
             onClick={redo}
             disabled={historyIndex >= history.length - 1}
-            className="p-2 rounded-lg bg-muted/50 text-muted-foreground hover:bg-muted disabled:opacity-30 transition-all"
+            className="p-2 rounded-lg bg-muted/50 text-muted-foreground hover:bg-muted transition-all disabled:opacity-30 disabled:cursor-not-allowed"
             title="Redo"
           >
             <RotateCw className="w-4 h-4" />
           </motion.button>
-          <motion.button
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={clearCanvas}
-            className="p-2 rounded-lg bg-destructive/20 text-destructive hover:bg-destructive/30 transition-all"
-            title="Clear canvas"
-          >
-            <Trash2 className="w-4 h-4" />
-          </motion.button>
         </div>
+
+        {/* Clear */}
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={clearCanvas}
+          className="p-2 rounded-lg bg-destructive/10 text-destructive hover:bg-destructive/20 transition-all"
+          title="Clear canvas"
+        >
+          <Trash2 className="w-4 h-4" />
+        </motion.button>
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* CV Mode Indicator */}
+        {isCVModeActive && cvStatus === 'active' && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-accent/10 border border-accent/20">
+            <Video className="w-3 h-3 text-accent animate-pulse" />
+            <span className="text-xs text-accent">Camera Active</span>
+          </div>
+        )}
       </div>
     </div>
   )
