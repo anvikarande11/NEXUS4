@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils'
 import { mockTasks, calculateTaskGravity, getTimeUntilDue, type Task } from '@/lib/mock-data'
 import { Progress } from '@/components/ui/progress'
 import { Badge } from '@/components/ui/badge'
+import { StreakMap } from '@/components/dashboard/streak-map'
 
 const urgencyColors = {
   critical: { bg: 'bg-destructive/20', border: 'border-destructive/40', text: 'text-destructive', glow: 'glow-danger' },
@@ -222,7 +223,12 @@ export function TaskGravityEngine() {
   const topRiskTask = tasks[0]
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      {/* GitHub-Style Streak Map */}
+      <div className="bg-muted/20 rounded-xl border border-border p-4">
+        <StreakMap />
+      </div>
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>

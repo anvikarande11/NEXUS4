@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next'
-import { Inter, JetBrains_Mono } from 'next/font/google'
+import { Inter, JetBrains_Mono, Caveat } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import { ThemeProvider } from '@/components/theme-provider'
 import './globals.css'
@@ -12,6 +12,11 @@ const inter = Inter({
 const jetbrainsMono = JetBrains_Mono({ 
   subsets: ["latin"],
   variable: '--font-jetbrains-mono'
+});
+
+const caveat = Caveat({
+  subsets: ["latin"],
+  variable: '--font-caveat'
 });
 
 export const metadata: Metadata = {
@@ -50,7 +55,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased h-screen overflow-hidden`}>
+      <body className={`${inter.variable} ${jetbrainsMono.variable} ${caveat.variable} font-sans antialiased h-screen overflow-hidden`}>
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem storageKey="nexus-theme">
           {children}
         </ThemeProvider>

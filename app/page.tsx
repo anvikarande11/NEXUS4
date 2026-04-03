@@ -24,7 +24,11 @@ import { BlackoutMode } from '@/components/dashboard/blackout-mode'
 import { NexusChat } from '@/components/dashboard/nexus-chat'
 import { UploadResourceModal } from '@/components/dashboard/upload-resource-modal'
 import { PeerStudyCircle } from '@/components/dashboard/peer-study-circle'
-import { Search, Command, Flame, User, Moon, Sun, Upload, MessageCircle, Users } from 'lucide-react'
+import { DashboardWhiteboard } from '@/components/dashboard/dashboard-whiteboard'
+import { PriorityHub } from '@/components/dashboard/priority-hub'
+import { MusicPod } from '@/components/dashboard/music-pod'
+import { PulseQuiz } from '@/components/dashboard/pulse-quiz'
+import { Search, Command, Flame, User, Moon, Sun, Upload, MessageCircle, Users, Brain } from 'lucide-react'
 import { mockClassPaths } from '@/lib/mock-data'
 
 // Animation variants
@@ -37,26 +41,14 @@ const viewVariants = {
 // View Components
 function DashboardView() {
   return (
-    <div className="h-full grid grid-cols-1 xl:grid-cols-3 gap-4 overflow-hidden">
-      {/* Left Column - Tasks & Issues */}
-      <div className="xl:col-span-2 flex flex-col gap-4 overflow-hidden">
-        <div className="flex-1 min-h-0 bg-card/50 rounded-2xl border border-border p-4 overflow-auto">
-          <TaskGravityEngine />
-        </div>
-        <div className="flex-1 min-h-0 bg-card/50 rounded-2xl border border-border p-4 overflow-auto">
-          <IssueTracker />
-        </div>
+    <div className="h-full flex gap-4 overflow-hidden">
+      {/* Main Area - Collaborative Whiteboard */}
+      <div className="flex-1 min-w-0">
+        <DashboardWhiteboard />
       </div>
 
-      {/* Right Column - Quick Stats */}
-      <div className="flex flex-col gap-4 overflow-hidden">
-        <div className="flex-1 min-h-0 bg-card/50 rounded-2xl border border-border p-4 overflow-auto">
-          <KnowledgeGraph />
-        </div>
-        <div className="flex-1 min-h-0 bg-card/50 rounded-2xl border border-border p-4 overflow-auto">
-          <SubjectHealth />
-        </div>
-      </div>
+      {/* Far Right - Priority Hub (Digital Sticky Note) */}
+      <PriorityHub />
     </div>
   )
 }
@@ -139,7 +131,7 @@ const viewComponents: Record<ViewType, React.ComponentType> = {
 
 // Top Bar Component
 function TopBar() {
-  const { toggleCommandPalette, toggleBlackoutMode, toggleChat, openUpload, togglePeerStudy } = useDashboardStore()
+  const { toggleCommandPalette, toggleBlackoutMode, toggleChat, openUpload, togglePeerStudy, togglePulseQuiz, focusPoints } = useDashboardStore()
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = React.useState(false)
 
@@ -207,6 +199,21 @@ function TopBar() {
         >
           <Users className="w-4 h-4" />
           <span className="hidden sm:inline text-xs">Peers</span>
+        </motion.button>
+
+        {/* Pulse Quiz Button */}
+        <motion.button
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          onClick={togglePulseQuiz}
+          className="px-3 py-2 rounded-lg hover:bg-muted transition-all text-accent hover:text-accent flex items-center gap-2 text-sm font-medium bg-accent/10 border border-accent/20"
+          title="5-Hour Pulse Quiz"
+        >
+          <Brain className="w-4 h-4" />
+          <span className="hidden sm:inline text-xs">Quiz</span>
+          {focusPoints > 0 && (
+            <span className="text-[10px] bg-accent/20 px-1.5 py-0.5 rounded font-bold">{focusPoints}</span>
+          )}
         </motion.button>
 
         {/* Divider */}
@@ -345,6 +352,12 @@ export default function Dashboard() {
 
       {/* Peer Study Circle */}
       <PeerStudyCircle />
+
+      {/* Music Pod */}
+      <MusicPod />
+
+      {/* 5-Hour Pulse Quiz */}
+      <PulseQuiz />
 
       {/* Decorative Background */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden -z-10">

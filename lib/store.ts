@@ -114,6 +114,12 @@ interface DashboardState {
   currentView: ViewType
   setCurrentView: (view: ViewType) => void
   
+  // Pulse Quiz
+  isPulseQuizActive: boolean
+  togglePulseQuiz: () => void
+  focusPoints: number
+  addFocusPoints: (points: number) => void
+  
   // Theme
   theme: ThemeMode
   setTheme: (theme: ThemeMode) => void
@@ -214,6 +220,12 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   // View navigation
   currentView: 'dashboard',
   setCurrentView: (view) => set({ currentView: view }),
+  
+  // Pulse Quiz
+  isPulseQuizActive: false,
+  togglePulseQuiz: () => set((state) => ({ isPulseQuizActive: !state.isPulseQuizActive })),
+  focusPoints: 0,
+  addFocusPoints: (points) => set((state) => ({ focusPoints: state.focusPoints + points })),
   
   // Theme
   theme: 'dark',
