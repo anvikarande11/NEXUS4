@@ -11,7 +11,8 @@ import {
   Settings,
   Gamepad2,
   Focus,
-  BookOpen
+  BookOpen,
+  Music
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useDashboardStore, ViewType } from '@/lib/store'
@@ -35,7 +36,7 @@ const navItems: { icon: typeof LayoutDashboard; label: string; view: ViewType; s
 ]
 
 export function Sidebar() {
-  const { currentView, setCurrentView, toggleDeepFocusMode, isDeepFocusMode } = useDashboardStore()
+  const { currentView, setCurrentView, toggleDeepFocusMode, isDeepFocusMode, toggleMusicPod, isMusicPodOpen } = useDashboardStore()
 
   return (
     <motion.aside
@@ -88,8 +89,33 @@ export function Sidebar() {
         </TooltipProvider>
       </nav>
 
-      {/* Focus Mode Button */}
-      <div className="p-2 border-t border-sidebar-border">
+      {/* Music & Focus Buttons */}
+      <div className="p-2 border-t border-sidebar-border flex flex-col gap-2">
+        {/* Music Button */}
+        <TooltipProvider delayDuration={0}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={toggleMusicPod}
+                className={cn(
+                  "w-12 h-12 mx-auto flex items-center justify-center rounded-xl transition-all duration-200",
+                  isMusicPodOpen
+                    ? "bg-primary/20 text-primary glow-primary"
+                    : "bg-sidebar-accent/50 text-sidebar-foreground/70 hover:bg-sidebar-accent"
+                )}
+              >
+                <Music className="w-5 h-5" />
+              </motion.button>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8}>
+              <span>Music Pod</span>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+
+        {/* Focus Mode Button */}
         <TooltipProvider delayDuration={0}>
           <Tooltip>
             <TooltipTrigger asChild>

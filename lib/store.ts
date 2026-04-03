@@ -209,6 +209,10 @@ interface DashboardState {
   setCVModeActive: (active: boolean) => void
   isCVModeActive: boolean
   
+  // Music Pod
+  isMusicPodOpen: boolean
+  toggleMusicPod: () => void
+  
   // Actions
   toggleSidebar: () => void
   toggleCommandPalette: () => void
@@ -527,6 +531,10 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   
   isCVModeActive: false,
   setCVModeActive: (active) => set({ isCVModeActive: active }),
+  
+  // Music Pod
+  isMusicPodOpen: false,
+  toggleMusicPod: () => set((state) => ({ isMusicPodOpen: !state.isMusicPodOpen })),
   
   // Actions
   toggleSidebar: () => set((state) => ({ isSidebarCollapsed: !state.isSidebarCollapsed })),

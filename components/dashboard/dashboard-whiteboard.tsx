@@ -1,8 +1,8 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { motion } from 'framer-motion'
-import { Pen, Highlighter, Eraser, Trash2, RotateCcw, RotateCw, Hand, Grid3x3, Palette } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Pen, Highlighter, Eraser, Trash2, RotateCcw, RotateCw, Hand, Grid3x3, Palette, Camera, CameraOff, AlertCircle } from 'lucide-react'
 import { useDashboardStore } from '@/lib/store'
 import { cn } from '@/lib/utils'
 
@@ -32,6 +32,10 @@ export function DashboardWhiteboard() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const contextRef = useRef<CanvasRenderingContext2D | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const handsRef = useRef<any>(null)
+  const cameraRef = useRef<any>(null)
+  const animationFrameRef = useRef<number | null>(null)
   
   const [drawState, setDrawState] = useState<CanvasDrawState>({
     isDrawing: false,
@@ -39,13 +43,18 @@ export function DashboardWhiteboard() {
     lastY: 0,
     tool: 'pen',
     color: '#22c55e',
-    lineWidth: 2,
+    lineWidth: 3,
   })
 
   const [showGrid, setShowGrid] = useState(true)
   const [history, setHistory] = useState<ImageData[]>([])
   const [historyIndex, setHistoryIndex] = useState(-1)
   const [showColorPicker, setShowColorPicker] = useState(false)
+  const [cvStatus, setCVStatus] = useState<'idle' | 'loading' | 'active' | 'error'>('idle')
+  const [cvError, setCVError] = useState<string>('')
+  const [fingerPosition, setFingerPosition] = useState<{ x: number; y: number } | null>(null)
+  const [isFingerDown, setIsFingerDown] = useState(false)
+  const lastFingerPos = useRef<{ x: number; y: number } | null>(null)
 
   // Initialize canvas
   useEffect(() => {
@@ -144,27 +153,9 @@ export function DashboardWhiteboard() {
     saveToHistory()
   }, [showGrid, saveToHistory])
 
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = canvasRef.current?.getBoundingClientRect()
-    if (!rect) return
-    
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
-    
-    setDrawState(prev => ({
-      ...prev,
-      isDrawing: true,
-      lastX: x,
-      lastY: y,
-    }))
-  }
-
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!drawState.isDrawing || !contextRef.current || !canvasRef.current) return
-
-    const rect = canvasRef.current.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
+  // Draw function used by both mouse and CV
+  const drawLine = useCallback((fromX: number, fromY: number, toX: number, toY: number) => {
+    if (!contextRef.current) return
     const ctx = contextRef.current
 
     if (drawState.tool === 'pen') {
@@ -182,18 +173,164 @@ export function DashboardWhiteboard() {
       ctx.lineCap = 'square'
       ctx.shadowBlur = 0
     } else if (drawState.tool === 'eraser') {
-      ctx.clearRect(x - drawState.lineWidth * 2, y - drawState.lineWidth * 2, drawState.lineWidth * 4, drawState.lineWidth * 4)
+      ctx.clearRect(toX - drawState.lineWidth * 2, toY - drawState.lineWidth * 2, drawState.lineWidth * 4, drawState.lineWidth * 4)
       ctx.globalAlpha = 1
-      setDrawState(prev => ({ ...prev, lastX: x, lastY: y }))
       return
     }
 
     ctx.beginPath()
-    ctx.moveTo(drawState.lastX, drawState.lastY)
-    ctx.lineTo(x, y)
+    ctx.moveTo(fromX, fromY)
+    ctx.lineTo(toX, toY)
     ctx.stroke()
     ctx.globalAlpha = 1
     ctx.shadowBlur = 0
+  }, [drawState.tool, drawState.color, drawState.lineWidth])
+
+  // Initialize MediaPipe Hands for CV Mode
+  useEffect(() => {
+    if (!isCVModeActive) {
+      // Cleanup when CV mode is turned off
+      if (cameraRef.current) {
+        cameraRef.current.stop()
+        cameraRef.current = null
+      }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
+      setCVStatus('idle')
+      setFingerPosition(null)
+      return
+    }
+
+    const initCV = async () => {
+      setCVStatus('loading')
+      setCVError('')
+
+      try {
+        // Load MediaPipe Hands from CDN
+        const { Hands } = await import('@mediapipe/hands')
+        const { Camera } = await import('@mediapipe/camera_utils')
+
+        const video = videoRef.current
+        if (!video) {
+          throw new Error('Video element not found')
+        }
+
+        // Initialize hands
+        const hands = new Hands({
+          locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        })
+
+        hands.setOptions({
+          maxNumHands: 1,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.7,
+          minTrackingConfidence: 0.5
+        })
+
+        hands.onResults((results: any) => {
+          if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            const landmarks = results.multiHandLandmarks[0]
+            
+            // Get index finger tip (landmark 8)
+            const indexTip = landmarks[8]
+            // Get thumb tip (landmark 4) for pinch detection
+            const thumbTip = landmarks[4]
+            
+            const canvas = canvasRef.current
+            if (!canvas) return
+            
+            // Convert normalized coords to canvas coords (mirror for natural feel)
+            const x = (1 - indexTip.x) * canvas.width
+            const y = indexTip.y * canvas.height
+            
+            setFingerPosition({ x, y })
+            
+            // Calculate distance between thumb and index finger for pinch gesture
+            const distance = Math.sqrt(
+              Math.pow(indexTip.x - thumbTip.x, 2) + 
+              Math.pow(indexTip.y - thumbTip.y, 2)
+            )
+            
+            // Pinch threshold - when fingers are close, we're "drawing"
+            const isPinching = distance < 0.05
+            
+            if (isPinching && lastFingerPos.current) {
+              drawLine(lastFingerPos.current.x, lastFingerPos.current.y, x, y)
+            }
+            
+            setIsFingerDown(isPinching)
+            lastFingerPos.current = { x, y }
+          } else {
+            setFingerPosition(null)
+            if (isFingerDown) {
+              saveToHistory()
+            }
+            setIsFingerDown(false)
+            lastFingerPos.current = null
+          }
+        })
+
+        handsRef.current = hands
+
+        // Initialize camera
+        const camera = new Camera(video, {
+          onFrame: async () => {
+            if (handsRef.current) {
+              await handsRef.current.send({ image: video })
+            }
+          },
+          width: 640,
+          height: 480
+        })
+
+        await camera.start()
+        cameraRef.current = camera
+        setCVStatus('active')
+
+      } catch (err: any) {
+        console.error('[v0] CV Mode error:', err)
+        setCVError(err.message || 'Failed to initialize hand tracking')
+        setCVStatus('error')
+        setCVModeActive(false)
+      }
+    }
+
+    initCV()
+
+    return () => {
+      if (cameraRef.current) {
+        cameraRef.current.stop()
+      }
+    }
+  }, [isCVModeActive, drawLine, isFingerDown, saveToHistory, setCVModeActive])
+
+  // Mouse drawing handlers
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (isCVModeActive) return
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+    
+    setDrawState(prev => ({
+      ...prev,
+      isDrawing: true,
+      lastX: x,
+      lastY: y,
+    }))
+  }
+
+  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (isCVModeActive) return
+    if (!drawState.isDrawing || !canvasRef.current) return
+
+    const rect = canvasRef.current.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    drawLine(drawState.lastX, drawState.lastY, x, y)
 
     setDrawState(prev => ({
       ...prev,
@@ -219,6 +356,11 @@ export function DashboardWhiteboard() {
         <div className="flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
           <span className="text-sm font-medium text-foreground">Live Whiteboard</span>
+          {isCVModeActive && cvStatus === 'active' && (
+            <span className="text-xs text-accent ml-2 px-2 py-0.5 bg-accent/10 rounded-full border border-accent/20">
+              Hand Tracking Active
+            </span>
+          )}
         </div>
         
         <div className="flex items-center gap-1">
@@ -228,14 +370,21 @@ export function DashboardWhiteboard() {
             whileTap={{ scale: 0.95 }}
             onClick={() => setCVModeActive(!isCVModeActive)}
             className={cn(
-              "p-1.5 rounded-lg transition-all",
+              "p-1.5 rounded-lg transition-all flex items-center gap-1.5",
               isCVModeActive
                 ? "bg-accent/20 text-accent"
                 : "bg-muted/50 text-muted-foreground hover:bg-muted"
             )}
             title="Toggle CV Mode (Hand Tracking)"
           >
-            <Hand className="w-4 h-4" />
+            {cvStatus === 'loading' ? (
+              <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+            ) : isCVModeActive ? (
+              <Camera className="w-4 h-4" />
+            ) : (
+              <CameraOff className="w-4 h-4" />
+            )}
+            <span className="text-xs hidden sm:inline">CV Mode</span>
           </motion.button>
 
           {/* Grid Toggle */}
@@ -258,26 +407,116 @@ export function DashboardWhiteboard() {
 
       {/* Canvas */}
       <div ref={containerRef} className="flex-1 relative overflow-hidden">
+        {/* Hidden video element for CV */}
+        <video
+          ref={videoRef}
+          className="hidden"
+          playsInline
+          muted
+        />
+
         <canvas
           ref={canvasRef}
           onMouseDown={startDrawing}
           onMouseMove={draw}
           onMouseUp={endDrawing}
           onMouseLeave={endDrawing}
-          className="absolute inset-0 w-full h-full cursor-crosshair"
+          className={cn(
+            "absolute inset-0 w-full h-full",
+            isCVModeActive ? "cursor-none" : "cursor-crosshair"
+          )}
         />
 
-        {/* CV Mode Indicator */}
-        {isCVModeActive && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="absolute top-3 left-3 flex items-center gap-2 px-3 py-1.5 rounded-full bg-accent/20 border border-accent/30 backdrop-blur"
-          >
-            <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
-            <span className="text-xs font-medium text-accent">CV Mode Active</span>
-          </motion.div>
-        )}
+        {/* CV Mode Finger Cursor */}
+        <AnimatePresence>
+          {isCVModeActive && fingerPosition && (
+            <motion.div
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0, opacity: 0 }}
+              className="absolute pointer-events-none z-10"
+              style={{
+                left: fingerPosition.x - 12,
+                top: fingerPosition.y - 12,
+              }}
+            >
+              <div 
+                className={cn(
+                  "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all",
+                  isFingerDown 
+                    ? "bg-accent/50 border-accent scale-125" 
+                    : "bg-primary/30 border-primary"
+                )}
+                style={{
+                  boxShadow: isFingerDown 
+                    ? `0 0 20px ${drawState.color}, 0 0 40px ${drawState.color}40` 
+                    : `0 0 10px ${drawState.color}40`
+                }}
+              >
+                <div 
+                  className="w-2 h-2 rounded-full"
+                  style={{ backgroundColor: drawState.color }}
+                />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* CV Mode Instructions Overlay */}
+        <AnimatePresence>
+          {isCVModeActive && cvStatus === 'active' && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-2 px-4 py-2 rounded-full bg-card/90 border border-border/50 backdrop-blur shadow-lg"
+            >
+              <Hand className="w-4 h-4 text-accent" />
+              <span className="text-xs text-muted-foreground">
+                Pinch thumb + index finger to draw
+              </span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* CV Error Display */}
+        <AnimatePresence>
+          {cvStatus === 'error' && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur"
+            >
+              <div className="text-center p-6 bg-card rounded-xl border border-destructive/30 max-w-sm">
+                <AlertCircle className="w-10 h-10 text-destructive mx-auto mb-3" />
+                <h3 className="text-sm font-medium text-foreground mb-2">Hand Tracking Error</h3>
+                <p className="text-xs text-muted-foreground mb-4">{cvError}</p>
+                <p className="text-xs text-muted-foreground">
+                  Make sure your camera is connected and you have granted permission.
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* CV Loading Overlay */}
+        <AnimatePresence>
+          {cvStatus === 'loading' && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur"
+            >
+              <div className="text-center">
+                <div className="w-12 h-12 border-3 border-accent border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+                <p className="text-sm text-muted-foreground">Initializing hand tracking...</p>
+                <p className="text-xs text-muted-foreground mt-2">Please allow camera access</p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Toolbar */}
@@ -323,32 +562,35 @@ export function DashboardWhiteboard() {
           </motion.button>
 
           {/* Color Popup */}
-          {showColorPicker && (
-            <motion.div
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="absolute bottom-full left-0 mb-2 p-2 rounded-lg bg-card border border-border shadow-lg"
-            >
-              <div className="grid grid-cols-4 gap-1.5">
-                {NEON_COLORS.map((color) => (
-                  <motion.button
-                    key={color}
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    onClick={() => {
-                      setDrawState(prev => ({ ...prev, color }))
-                      setShowColorPicker(false)
-                    }}
-                    className={cn(
-                      "w-6 h-6 rounded-full border-2 transition-all",
-                      drawState.color === color ? "border-white" : "border-transparent"
-                    )}
-                    style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}40` }}
-                  />
-                ))}
-              </div>
-            </motion.div>
-          )}
+          <AnimatePresence>
+            {showColorPicker && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                className="absolute bottom-full left-0 mb-2 p-2 rounded-lg bg-card border border-border shadow-lg"
+              >
+                <div className="grid grid-cols-4 gap-1.5">
+                  {NEON_COLORS.map((color) => (
+                    <motion.button
+                      key={color}
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      onClick={() => {
+                        setDrawState(prev => ({ ...prev, color }))
+                        setShowColorPicker(false)
+                      }}
+                      className={cn(
+                        "w-6 h-6 rounded-full border-2 transition-all",
+                        drawState.color === color ? "border-white" : "border-transparent"
+                      )}
+                      style={{ backgroundColor: color, boxShadow: `0 0 8px ${color}40` }}
+                    />
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Line Width */}
