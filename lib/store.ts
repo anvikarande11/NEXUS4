@@ -110,6 +110,10 @@ interface WorkflowHealth {
 }
 
 interface DashboardState {
+  // Intro
+  hasSeenIntro: boolean
+  setHasSeenIntro: (seen: boolean) => void
+  
   // View navigation
   currentView: ViewType
   setCurrentView: (view: ViewType) => void
